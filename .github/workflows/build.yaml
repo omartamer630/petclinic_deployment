@@ -5,7 +5,7 @@ on:
     branches: ["main"]
 
 env:
-  IMAGE_TAG: V1.0.0
+  IMAGE_TAG: V2.0.0
 
 jobs:
   build_image:
@@ -28,9 +28,9 @@ jobs:
         id: meta
         uses: docker/metadata-action@v4
         with:
-          images: ${{ secrets.DOCKERHUB_USERNAME }}/petclinicc # Ex
+          images: ${{ secrets.DOCKERHUB_USERNAME }}/petclinicc
           tags: |
-            type=ref,event=branch,branch=main,tag=${{ env.IMAGE_TAG }}
+            type=raw,value=${{ env.IMAGE_TAG }}
             
       - name: Build and push Docker image
         uses: docker/build-push-action@v4
