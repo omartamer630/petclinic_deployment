@@ -5,7 +5,7 @@ on:
     branches: ["main"]
 
 env:
-  IMAGE_TAG: V2.0.0
+  IMAGE_TAG: v${{ github.run_number }}
 
 jobs:
   build_image:
@@ -36,7 +36,76 @@ jobs:
         uses: docker/build-push-action@v4
         with:
           context: .
-          file: ./Dockerfile # Docker
+          file: ./Dockerfile
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+
+  deploy_to_gcp:
+    needs: build_image
+    runs-on: ubuntu-latest
+
+    steps:
+      - id: 'auth'
+        uses: 'google-github-actions/auth@v2'
+        with:
+          credentials_json: '${{ secrets.GCP_CREDENTIALS }}'
+          project_id: ${{ secrets.PROJECT_ID }}
+
+      - name: 'Set up Cloud SDK'
+        uses: 'google-github-actions/setup-gcloud@v2'
+
+
+      - name: Ensure Firewall Rules for HTTP/HTTPS
+        run: |
+          gcloud compute firewall-rules create default-allow-http \
+            --allow tcp:80 \
+            --target-tags=http-server \
+            --description="Allow HTTP traffic" \
+            --direction=INGRESS \
+            --priority=1000 \
+            --network=default || echo "Rule default-allow-http already exists"
+
+          gcloud compute firewall-rules create default-allow-https \
+            --allow tcp:443 \
+            --target-tags=https-server \
+            --description="Allow HTTPS traffic" \
+            --direction=INGRESS \
+            --priority=1000 \
+            --network=default || echo "Rule default-allow-https already exists"
+ 
+      - name: Create VM Instance (idempotent)
+        run: |
+          if gcloud compute instances describe petclinic-vm --zone=us-central1-a >/dev/null 2>&1; then
+            echo "VM petclinic-vm already exists, skipping creation."
+          else
+            gcloud compute instances create petclinic-vm \
+              --zone=us-central1-a \
+              --machine-type=e2-medium \
+              --image-family=debian-11 \
+              --image-project=debian-cloud \
+              --tags=http-server,https-server \
+              --boot-disk-size=20GB \
+              --quiet
+          fi
+
+      - name: Install Docker on VM
+        run: |
+          gcloud compute ssh petclinic-vm \
+            --zone=us-central1-a \
+            --command "
+              sudo apt-get update &&
+              sudo apt-get install -y docker.io
+            "
+
+      - name: Deploy container to GCP VM
+        run: |
+          gcloud compute ssh petclinic-vm \
+            --zone=us-central1-a \
+            --command "
+              sudo docker pull ${{ secrets.DOCKERHUB_USERNAME }}/petclinicc:${{ env.IMAGE_TAG }} &&
+              sudo docker stop petclinicc || true &&
+              sudo docker rm petclinicc || true &&
+              sudo docker run -d --restart always --name petclinicc -p 80:8080 \
+                ${{ secrets.DOCKERHUB_USERNAME }}/petclinicc:${{ env.IMAGE_TAG }}
+            "
